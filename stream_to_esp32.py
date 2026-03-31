@@ -9,9 +9,12 @@ import time
 import json
 import os
 import sys
+import shutil
+import tempfile
 import numpy as np
 import math
 import threading
+import logging
 from generate_dataset import (
     FEATURE_NAMES, WHEELBASE, STEERING_RATIO, DT,
     VehicleState, update_vehicle, RealisticIMU, RealisticGPS,
@@ -97,7 +100,7 @@ def format_packet(raw_features):
 
 def parse_response(line):
     parts = line.strip().split(',')
-    if len(parts) >= 5 and parts[0] == 'R':
+    if len(parts) >= 6 and parts[0] == 'R':
         result = {
             'prediction': int(parts[1]), 'raw_prediction': int(parts[2]),
             'vehicle_mode': int(parts[3]), 'feature_time_us': int(parts[4]),
@@ -154,8 +157,13 @@ class DemoSimulator:
             raw['gps_speed'] += 10.0; label = 1; attack_name = 'gps_speed_spoof'
         elif attack_type == 'can_inject':
             raw['can_steering_angle'] = 0.5 * np.random.choice([-1, 1]); label = 1; attack_name = 'can_steering_inject'
-        elif attack_type == 'v2x_fake':
+        elif attack_type == 'v2x_fake' or attack_type == 'v2x_fake_curv':
             raw['v2x_road_curvature'] = 0.04; label = 1; attack_name = 'v2x_curvature_fake'
+        elif attack_type == 'can_dos':
+            raw['can_id_entropy'] = np.random.uniform(0.3, 1.0)
+            raw['can_msg_freq_dev'] = np.random.uniform(80, 200)
+            raw['can_payload_anomaly'] = np.random.uniform(0.5, 1.0)
+            label = 1; attack_name = 'can_dos_flooding'
         elif attack_type == 'coord_can_v2x':
             fake_steer = 0.6 * np.random.choice([-1, 1])
             fake_wheel = fake_steer / STEERING_RATIO
@@ -173,6 +181,17 @@ class DemoSimulator:
             speed_boost = 12.0; fake_speed = raw['gps_speed'] + speed_boost
             raw['gps_speed'] = fake_speed; raw['can_wheel_speed'] = fake_speed
             label = 2; attack_name = 'coord_gps_can'
+        elif attack_type == 'coord_gps_v2x':
+            fake_hr = np.random.uniform(0.15, 0.4) * np.random.choice([-1, 1])
+            fake_curv = abs(fake_hr / max(abs(raw['gps_speed']), 1.0))
+            raw['gps_heading_rate'] = fake_hr; raw['v2x_road_curvature'] = fake_curv
+            label = 2; attack_name = 'coord_gps_v2x'
+        elif attack_type == 'coord_speed_all':
+            speed_boost = np.random.uniform(10, 20)
+            fake_speed = raw['gps_speed'] + speed_boost
+            raw['gps_speed'] = fake_speed; raw['can_wheel_speed'] = fake_speed
+            raw['v2x_speed_limit'] = fake_speed + 5
+            label = 2; attack_name = 'coord_speed_all'
         self.t += 1
         return raw, label, attack_name
 
@@ -264,7 +283,14 @@ def run_demo(mode='scripted', port=None, total_steps=1800):
                      'attack_name': attack_name, 'attack_type': attack_type, 'description': description, **result}
             results_log.append(entry)
             latest_file = os.path.join(RESULTS_DIR, 'latest.json')
-            with open(latest_file, 'w') as f: json.dump(entry, f)
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=RESULTS_DIR, suffix='.json')
+            try:
+                with os.fdopen(tmp_fd, 'w') as f:
+                    json.dump(entry, f)
+                shutil.move(tmp_path, latest_file)
+            except OSError:
+                try: os.unlink(tmp_path)
+                except OSError: pass
             if step % 10 == 0:
                 pred = result['prediction']
                 pred_str = ['NORMAL', 'SINGLE', 'COORD'][pred]

@@ -54,7 +54,7 @@ int prediction_buffer[CONFIRM_COUNT];
 int pred_buf_idx = 0;
 
 unsigned long lastReceiveTime = 0;
-char serialBuffer[512];
+char serialBuffer[600];
 int bufferPos = 0;
 
 enum VehicleMode { MODE_NORMAL, MODE_DEGRADED, MODE_SAFE_STOP };
@@ -376,7 +376,7 @@ void loop() {
                 bufferPos = 0;  // Always reset after processing
             }
         } else {
-            if (bufferPos < 509) {  // Leave room for null terminator
+            if (bufferPos < 597) {  // Leave room for null terminator
                 serialBuffer[bufferPos++] = c;
             } else {
                 // Buffer overflow — discard entire packet

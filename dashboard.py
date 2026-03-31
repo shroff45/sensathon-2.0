@@ -10,6 +10,9 @@ import time
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════
 # SAFE JSON LOADING
@@ -146,9 +149,17 @@ with tab_live:
         st.info("Waiting for data... Run `python stream_to_esp32.py` to start the demo.")
     log_file = os.path.join(RESULTS_DIR, 'full_demo_log.json')
     if os.path.exists(log_file):
-        log_data = safe_load_json(log_file, [])
-        if len(log_data) > 1000:
-            log_data = log_data[-1000:]
+        # H5: Tail-read — only load last 200 entries to prevent memory bloat
+        try:
+            with open(log_file) as f:
+                content = f.read()
+            if content.strip():
+                full_log = json.loads(content)
+                log_data = full_log[-200:] if len(full_log) > 200 else full_log
+            else:
+                log_data = []
+        except (json.JSONDecodeError, FileNotFoundError, OSError):
+            log_data = []
         if log_data:
             st.markdown("### Detection Timeline")
             times = [d['time'] for d in log_data]
@@ -342,15 +353,13 @@ with tab_arch:
     > physics equations that serve as unforgeable lie detectors.
     """)
 
-# Auto-refresh only during active demo
-if os.path.exists(os.path.join(RESULTS_DIR, 'latest.json')):
-    try:
-        latest_check = safe_load_json(os.path.join(RESULTS_DIR, 'latest.json'), {})
-        # Only refresh if data is recent (within last 5 seconds)
-        if 'step' in latest_check:
-            last_update = os.path.getmtime(os.path.join(RESULTS_DIR, 'latest.json'))
-            if time.time() - last_update < 5:
-                time.sleep(0.5)
-                st.rerun()
-    except (json.JSONDecodeError, FileNotFoundError):
-        pass
+# M3: Unconditional auto-refresh gated on file recency
+try:
+    _latest_path = os.path.join(RESULTS_DIR, 'latest.json')
+    if os.path.exists(_latest_path):
+        _last_mod = os.path.getmtime(_latest_path)
+        if time.time() - _last_mod < 5:
+            time.sleep(0.5)
+            st.rerun()
+except (FileNotFoundError, OSError):
+    pass

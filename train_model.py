@@ -225,3 +225,13 @@ if __name__ == '__main__':
     print(f"True_Coord:     {cm[2][0]:7d}      {cm[2][1]:7d}      {cm[2][2]:7d}")
     print("\n Training complete! Models saved to models/")
     print("   Results saved to results/")
+
+    # M4: Run baselines for comparison data (dashboard Ablation tab)
+    try:
+        from baselines import run_baselines
+        print("\n" + "=" * 70)
+        print("RUNNING BASELINE COMPARISONS")
+        print("=" * 70)
+        run_baselines()
+    except Exception as e:
+        print(f"  Baseline comparison skipped: {e}")

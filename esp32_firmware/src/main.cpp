@@ -15,6 +15,7 @@
  */
 
 #include "rf_model.h"
+#include "hardware_sensors.h"
 #include <math.h>
 
 #define LED_GREEN  25
@@ -61,6 +62,7 @@ enum VehicleMode { MODE_NORMAL, MODE_DEGRADED, MODE_SAFE_STOP };
 int consecutive_alerts = 0;
 
 void setup() {
+    initHardwareSensors();
     Serial.begin(SERIAL_BAUD);
     
     // Memory check
@@ -322,6 +324,19 @@ bool parse_packet(char* packet) {
 }
 
 void loop() {
+    static unsigned long lastSensorSendTime = 0;
+    if (millis() - lastSensorSendTime >= 100) {
+        lastSensorSendTime = millis();
+        float lat, lon, yaw, spd, hdg, dist;
+        readHardwareSensors(&lat, &lon, &yaw, &spd, &hdg, &dist);
+        Serial.print("SENSOR,");
+        Serial.print(lat, 4); Serial.print(",");
+        Serial.print(lon, 4); Serial.print(",");
+        Serial.print(yaw, 4); Serial.print(",");
+        Serial.print(spd, 4); Serial.print(",");
+        Serial.print(hdg, 4); Serial.print(",");
+        Serial.println(dist, 4);
+    }
     while (Serial.available()) {
         char c = Serial.read();
         lastReceiveTime = millis();

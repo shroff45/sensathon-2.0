@@ -123,18 +123,33 @@ class DemoSimulator:
         self.feature_history = []
         self.t = 0
 
-    def generate_raw_features(self, attack_type='none'):
-        target_steer = np.random.normal(0, 0.03)
-        target_speed = self.state.speed + np.random.normal(0, 0.3)
-        if self.t % 100 < 20: target_steer = 0.2 * np.sin(self.t * 0.1)
-        self.state = update_vehicle(self.state, target_steer, target_speed)
+    def generate_raw_features(self, attack_type='none', hw_data=None):
+        if hw_data:
+            self.state.speed = hw_data.get('gps_speed', 0.0)
+            self.state.yaw_rate = hw_data.get('imu_yaw_rate', 0.0)
+            self.state.lat_accel = hw_data.get('imu_lat_accel', 0.0)
+            self.state.lon_accel = hw_data.get('imu_lon_accel', 0.0)
+            self.state.obstacle_dist = hw_data.get('ultrasonic_min', 50.0)
+            
+            if abs(self.state.speed) > 0.5:
+                # Estimate simulated steering wheel angle from the real yaw to match reality
+                wheel_angle = math.atan(self.state.yaw_rate * WHEELBASE / self.state.speed)
+                self.state.steering_wheel_angle = wheel_angle * STEERING_RATIO
+            else:
+                self.state.steering_wheel_angle = 0.0
+        else:
+            target_steer = np.random.normal(0, 0.03)
+            target_speed = self.state.speed + np.random.normal(0, 0.3)
+            if self.t % 100 < 20: target_steer = 0.2 * np.sin(self.t * 0.1)
+            self.state = update_vehicle(self.state, target_steer, target_speed)
+            
         raw = {
-            'gps_speed': self.gps.read_speed(self.state.speed),
-            'gps_heading_rate': self.gps.read_heading_rate(self.state.yaw_rate),
-            'imu_lat_accel': self.imu.read_lat_accel(self.state.lat_accel),
-            'imu_yaw_rate': self.imu.read_yaw_rate(self.state.yaw_rate),
-            'imu_lon_accel': self.imu.read_lon_accel(self.state.lon_accel),
-            'ultrasonic_min': max(0.02, self.state.obstacle_dist + np.random.normal(0, NOISE['ultrasonic'])),
+            'gps_speed': hw_data['gps_speed'] if hw_data else self.gps.read_speed(self.state.speed),
+            'gps_heading_rate': hw_data['gps_heading_rate'] if hw_data else self.gps.read_heading_rate(self.state.yaw_rate),
+            'imu_lat_accel': hw_data['imu_lat_accel'] if hw_data else self.imu.read_lat_accel(self.state.lat_accel),
+            'imu_yaw_rate': hw_data['imu_yaw_rate'] if hw_data else self.imu.read_yaw_rate(self.state.yaw_rate),
+            'imu_lon_accel': hw_data['imu_lon_accel'] if hw_data else self.imu.read_lon_accel(self.state.lon_accel),
+            'ultrasonic_min': hw_data['ultrasonic_min'] if hw_data else max(0.02, self.state.obstacle_dist + np.random.normal(0, NOISE['ultrasonic'])),
             'ultrasonic_rate': 0.0,
             'can_wheel_speed': self.state.speed + np.random.normal(0, NOISE['can_wheel_speed']),
             'can_steering_angle': self.state.steering_wheel_angle + np.random.normal(0, NOISE['can_steering']),
@@ -218,7 +233,7 @@ def set_attack(attack_type):
 def get_attack():
     with current_attack["lock"]: return current_attack["type"]
 
-def run_demo(mode='scripted', port=None, total_steps=1800):
+def run_demo(mode='scripted', port=None, total_steps=1800, hw_sensors=False):
     ser = connect_esp32(port)
     use_hardware = ser is not None
     if not use_hardware:
@@ -233,12 +248,35 @@ def run_demo(mode='scripted', port=None, total_steps=1800):
     sim = DemoSimulator()
     results_log = []
     print("\n" + "=" * 60)
-    print(f"DEMO MODE: {mode.upper()}")
+    print(f"DEMO MODE: {mode.upper()}" + (" (HARDWARE SENSORS ON)" if hw_sensors else ""))
     print("=" * 60 + "\n")
     for step in range(total_steps):
+        hw_data = None
+        if hw_sensors and use_hardware:
+            try:
+                # Consume all lines from ESP32 to get the latest SENSOR packet
+                lines = []
+                while ser.in_waiting > 0:
+                    lines.append(ser.readline().decode('utf-8', errors='ignore').strip())
+                for line in reversed(lines):
+                    if line.startswith('SENSOR,'):
+                        parts = line.split(',')
+                        if len(parts) == 7:
+                            hw_data = {
+                                'imu_lat_accel': float(parts[1]),
+                                'imu_lon_accel': float(parts[2]),
+                                'imu_yaw_rate': float(parts[3]),
+                                'gps_speed': float(parts[4]),
+                                'gps_heading_rate': float(parts[5]),
+                                'ultrasonic_min': float(parts[6])
+                            }
+                            break
+            except Exception as e:
+                pass
+
         if mode == 'scripted': attack_type, description = get_scripted_attack(step)
         else: attack_type = get_attack(); description = f"Interactive: {attack_type}"
-        raw, true_label, attack_name = sim.generate_raw_features(attack_type)
+        raw, true_label, attack_name = sim.generate_raw_features(attack_type, hw_data=hw_data)
         packet = format_packet(raw)
         result = None
         if use_hardware:
@@ -310,9 +348,10 @@ def run_demo(mode='scripted', port=None, total_steps=1800):
     if ser: ser.close()
 
 if __name__ == '__main__':
-    mode = 'scripted'; port = None
+    mode = 'scripted'; port = None; hw_sensors = False
     for arg in sys.argv[1:]:
         if arg == '--interactive': mode = 'interactive'
+        elif arg == '--hardware': hw_sensors = True
         elif arg.startswith('--port='): port = arg.split('=')[1]
-        elif arg == '--help': print("Usage: python stream_to_esp32.py [--interactive] [--port=COM3]"); sys.exit(0)
-    run_demo(mode=mode, port=port)
+        elif arg == '--help': print("Usage: python stream_to_esp32.py [--interactive] [--hardware] [--port=COM3]"); sys.exit(0)
+    run_demo(mode=mode, port=port, hw_sensors=hw_sensors)

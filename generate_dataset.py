@@ -257,6 +257,9 @@ def safe_normalized_diff(a, b, epsilon=0.001):
     Capped at 2.0 to prevent extreme outliers from dominating
     Random Forest splits.
     """
+    if math.isnan(a) or math.isnan(b):
+        return 0.0
+        
     numerator = abs(a - b)
     denominator = max(abs(a), abs(b), epsilon)
     result = numerator / denominator
